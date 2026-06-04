@@ -1,284 +1,528 @@
 <?php
 session_start();
-include("config/db.php");
+require_once __DIR__ . "/config/db.php";
 
+/*
+=================================================
+ERROR HANDLING
+=================================================
+*/
+mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+
+if (!isset($conn)) {
+    die("Database connection failed.");
+}
+
+/*
+=================================================
+AUTH
+=================================================
+*/
 if (!isset($_SESSION['user_id'])) {
     header("Location: auth/login.php");
     exit();
 }
 
-$user_id = $_SESSION['user_id'];
+$user_id = (int)$_SESSION['user_id'];
 
 /*
-========================================
+=================================================
 SEARCH
-========================================
+=================================================
 */
-$search = $_GET['search'] ?? "";
-$searchTerm = "%$search%";
+$search = trim($_GET['search'] ?? '');
+$searchTerm = "%{$search}%";
 
-$sql = "SELECT * FROM recipes 
-        WHERE user_id = ? 
-        AND (title LIKE ? OR category LIKE ?)
-        ORDER BY id DESC";
+$stmt = $conn->prepare("
+    SELECT *
+    FROM recipes
+    WHERE user_id = ?
+    AND (
+        title LIKE ?
+        OR category LIKE ?
+    )
+    ORDER BY id DESC
+");
 
-$stmt = $conn->prepare($sql);
-$stmt->bind_param("iss", $user_id, $searchTerm, $searchTerm);
+$stmt->bind_param(
+    "iss",
+    $user_id,
+    $searchTerm,
+    $searchTerm
+);
+
 $stmt->execute();
-$result = $stmt->get_result();
+$recipes = $stmt->get_result();
 
 /*
-========================================
-STATS (CLEANED + FIXED)
-========================================
+=================================================
+STATS
+=================================================
 */
-$totalRecipes = $conn->query("SELECT COUNT(*) AS total FROM recipes WHERE user_id=$user_id")
-->fetch_assoc()['total'];
 
-$totalUsers = $conn->query("SELECT COUNT(*) AS total FROM users")->fetch_assoc()['total'];
-
-$totalLikes = $conn->query("SELECT COUNT(*) AS total FROM likes")->fetch_assoc()['total'];
-
-$categories = $conn->query("
-    SELECT category, COUNT(*) as count 
-    FROM recipes 
-    GROUP BY category
+$stmt = $conn->prepare("
+    SELECT COUNT(*) total
+    FROM recipes
+    WHERE user_id = ?
 ");
-?>
+$stmt->bind_param("i", $user_id);
+$stmt->execute();
+$totalRecipes = $stmt->get_result()->fetch_assoc()['total'];
 
+$totalUsers = 0;
+$result = $conn->query("
+    SELECT COUNT(*) total
+    FROM users
+");
+if ($result) {
+    $totalUsers = $result->fetch_assoc()['total'];
+}
+
+$totalLikes = 0;
+
+try {
+    $result = $conn->query("
+        SELECT COUNT(*) total
+        FROM likes
+    ");
+
+    if ($result) {
+        $totalLikes = $result->fetch_assoc()['total'];
+    }
+} catch (Exception $e) {
+    $totalLikes = 0;
+}
+
+/*
+=================================================
+CATEGORY ANALYTICS
+=================================================
+*/
+
+$stmt = $conn->prepare("
+    SELECT category, COUNT(*) count
+    FROM recipes
+    WHERE user_id = ?
+    GROUP BY category
+    ORDER BY count DESC
+");
+
+$stmt->bind_param("i", $user_id);
+$stmt->execute();
+
+$categories = $stmt->get_result();
+
+?>
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-<title>Recipe Dashboard</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+
+<title>FlavorVault Dashboard</title>
+
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
 <style>
+
 :root{
-    --orange:#ff7a18;
-    --dark:#0f0f0f;
-    --brown:#5a3e2b;
-    --white:#ffffff;
+    --primary:#ff7a18;
+    --secondary:#ffb347;
+    --dark:#0f172a;
+    --card:#1e293b;
+    --border:#334155;
+    --white:#fff;
+    --success:#10b981;
+    --danger:#ef4444;
 }
 
-/* BASE */
-body{
+*{
     margin:0;
-    font-family:Arial;
-    background:var(--dark);
-    color:var(--white);
+    padding:0;
+    box-sizing:border-box;
 }
 
-/* TOPBAR */
-.topbar{
-    background:var(--brown);
-    padding:15px;
+body{
+    font-family:Poppins,sans-serif;
+    background:var(--dark);
+    color:white;
+}
+
+/* HEADER */
+
+.header{
+    padding:20px;
+    background:#111827;
+    border-bottom:1px solid var(--border);
+}
+
+.nav{
     display:flex;
     justify-content:space-between;
-    flex-wrap:wrap;
     align-items:center;
+    gap:15px;
+    flex-wrap:wrap;
 }
 
-.topbar h2{
-    color:var(--orange);
+.logo{
+    font-size:24px;
+    font-weight:700;
+    color:var(--primary);
 }
 
-/* SEARCH */
-input{
-    padding:10px;
+.search-box{
+    display:flex;
+}
+
+.search-box input{
+    padding:12px;
     border:none;
-    border-radius:8px;
+    border-radius:10px;
+    width:300px;
+    max-width:100%;
 }
 
 /* STATS */
+
 .stats{
+    padding:25px;
     display:grid;
-    grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
-    gap:15px;
+    grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+    gap:20px;
+}
+
+.stat{
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:15px;
     padding:20px;
-}
-
-.card{
-    background:var(--brown);
-    padding:15px;
-    border-radius:10px;
     text-align:center;
-    transition:0.3s;
+    transition:.3s;
 }
 
-.card:hover{
-    background:var(--orange);
-    transform:scale(1.05);
+.stat:hover{
+    transform:translateY(-4px);
 }
 
-/* GRID */
+.stat h2{
+    color:var(--primary);
+    margin-bottom:8px;
+}
+
+/* CATEGORY */
+
+.analytics{
+    padding:0 25px 25px;
+}
+
+.analytics-card{
+    background:var(--card);
+    border:1px solid var(--border);
+    padding:20px;
+    border-radius:15px;
+}
+
+.analytics h3{
+    margin-bottom:15px;
+    color:var(--primary);
+}
+
+.category{
+    display:flex;
+    justify-content:space-between;
+    padding:10px 0;
+    border-bottom:1px solid rgba(255,255,255,.05);
+}
+
+/* RECIPES */
+
 .grid{
     display:grid;
-    grid-template-columns:repeat(auto-fit,minmax(250px,1fr));
-    gap:20px;
-    padding:20px;
+    grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
+    gap:25px;
+    padding:25px;
 }
 
-/* CARD */
 .recipe{
-    background:#1c1c1c;
-    border-radius:12px;
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:18px;
     overflow:hidden;
-    border:1px solid var(--brown);
-    transition:0.3s;
+    transition:.3s;
 }
 
 .recipe:hover{
-    transform:translateY(-6px);
-    border-color:var(--orange);
+    transform:translateY(-5px);
 }
 
 .recipe img{
     width:100%;
-    height:180px;
+    height:220px;
     object-fit:cover;
 }
 
-/* CONTENT */
 .content{
-    padding:15px;
+    padding:20px;
 }
 
 .title{
-    color:var(--orange);
-    font-size:18px;
+    color:var(--primary);
+    font-size:20px;
+    font-weight:600;
+}
+
+.category-badge{
+    display:inline-block;
+    margin-top:10px;
+    background:rgba(255,122,24,.15);
+    color:var(--primary);
+    padding:5px 12px;
+    border-radius:30px;
+    font-size:13px;
 }
 
 /* BUTTONS */
-.btn{
-    padding:8px 10px;
-    margin:5px 5px 0 0;
-    border-radius:6px;
-    border:none;
-    cursor:pointer;
-    font-size:12px;
+
+.actions{
+    margin-top:20px;
+    display:flex;
+    flex-wrap:wrap;
+    gap:10px;
 }
 
-.view{ background:var(--orange); }
-.edit{ background:var(--brown); color:white; }
-.delete{ background:#c0392b; color:white; }
-.like{ background:white; }
+.btn{
+    text-decoration:none;
+    padding:10px 15px;
+    border:none;
+    border-radius:8px;
+    cursor:pointer;
+    font-weight:500;
+}
 
-/* MOBILE */
-@media(max-width:600px){
-    .topbar{
+.view{
+    background:var(--primary);
+    color:white;
+}
+
+.edit{
+    background:var(--success);
+    color:white;
+}
+
+.delete{
+    background:var(--danger);
+    color:white;
+}
+
+.like{
+    background:white;
+    color:black;
+}
+
+/* EMPTY */
+
+.empty{
+    text-align:center;
+    padding:50px;
+    color:#94a3b8;
+}
+
+@media(max-width:768px){
+
+    .nav{
         flex-direction:column;
-        gap:10px;
+    }
+
+    .search-box input{
+        width:100%;
     }
 }
+
 </style>
 </head>
-
 <body>
 
-<!-- TOPBAR -->
-<div class="topbar">
-    <h2>🍲 Recipe Dashboard</h2>
+<header class="header">
+    <div class="nav">
 
-    <form method="GET">
-        <input type="text" name="search" placeholder="Search..." value="<?php echo htmlspecialchars($search); ?>">
-    </form>
-</div>
+        <div class="logo">🍲 FlavorVault</div>
 
-<!-- STATS -->
-<div class="stats">
-    <div class="card">
-        <h3><?php echo $totalRecipes; ?></h3>
+        <form method="GET" class="search-box">
+            <input
+                type="text"
+                name="search"
+                placeholder="Search recipes..."
+                value="<?= htmlspecialchars($search) ?>"
+            >
+        </form>
+
+    </div>
+</header>
+
+<section class="stats">
+
+    <div class="stat">
+        <h2><?= $totalRecipes ?></h2>
         <p>My Recipes</p>
     </div>
 
-    <div class="card">
-        <h3><?php echo $totalUsers; ?></h3>
-        <p>Users</p>
+    <div class="stat">
+        <h2><?= $totalUsers ?></h2>
+        <p>Total Users</p>
     </div>
 
-    <div class="card">
-        <h3><?php echo $totalLikes; ?></h3>
+    <div class="stat">
+        <h2><?= $totalLikes ?></h2>
         <p>Total Likes</p>
     </div>
-</div>
 
-<!-- CATEGORY ANALYTICS -->
-<div style="padding:20px;">
-    <h3 style="color:var(--orange)">📊 Categories</h3>
+</section>
 
-    <?php while($c = $categories->fetch_assoc()): ?>
-        <p><?php echo $c['category']; ?> → <?php echo $c['count']; ?></p>
-    <?php endwhile; ?>
-</div>
+<section class="analytics">
 
-<!-- RECIPES -->
-<div class="grid">
+    <div class="analytics-card">
 
-<?php while($row = $result->fetch_assoc()): ?>
+        <h3>📊 Category Analytics</h3>
 
-<div class="recipe" id="recipe-<?php echo $row['id']; ?>">
+        <?php while($cat = $categories->fetch_assoc()): ?>
 
-    <img src="assets/uploads/<?php echo $row['image']; ?>">
+            <div class="category">
+                <span><?= htmlspecialchars($cat['category']) ?></span>
+                <strong><?= $cat['count'] ?></strong>
+            </div>
+
+        <?php endwhile; ?>
+
+    </div>
+
+</section>
+
+<section class="grid">
+
+<?php if($recipes->num_rows > 0): ?>
+
+<?php while($row = $recipes->fetch_assoc()): ?>
+
+<?php
+
+$image = !empty($row['image'])
+    ? "assets/uploads/" . htmlspecialchars($row['image'])
+    : "assets/images/default-food.jpg";
+
+?>
+
+<div class="recipe" id="recipe-<?= $row['id'] ?>">
+
+    <img
+        src="<?= $image ?>"
+        alt="<?= htmlspecialchars($row['title']) ?>"
+        loading="lazy"
+    >
 
     <div class="content">
 
-        <div class="title"><?php echo $row['title']; ?></div>
-        <small><?php echo $row['category']; ?></small>
+        <div class="title">
+            <?= htmlspecialchars($row['title']) ?>
+        </div>
 
-        <div>
+        <div class="category-badge">
+            <?= htmlspecialchars($row['category']) ?>
+        </div>
 
-            <a class="btn view" href="recipe.php?id=<?php echo $row['id']; ?>">View</a>
+        <div class="actions">
 
-            <a class="btn edit" href="edit_recipe.php?id=<?php echo $row['id']; ?>">Edit</a>
+            <a class="btn view"
+               href="recipe.php?id=<?= $row['id'] ?>">
+               View
+            </a>
 
-            <button class="btn delete" onclick="deleteRecipe(<?php echo $row['id']; ?>)">
+            <a class="btn edit"
+               href="edit_recipe.php?id=<?= $row['id'] ?>">
+               Edit
+            </a>
+
+            <button
+                class="btn delete"
+                onclick="deleteRecipe(<?= $row['id'] ?>)">
                 Delete
             </button>
 
-            <button class="btn like" onclick="likeRecipe(<?php echo $row['id']; ?>)">
+            <button
+                class="btn like"
+                onclick="likeRecipe(<?= $row['id'] ?>)">
                 ❤️ Like
             </button>
 
         </div>
 
     </div>
+
 </div>
 
 <?php endwhile; ?>
 
+<?php else: ?>
+
+<div class="empty">
+    <h2>No recipes found</h2>
+    <p>Start creating your first recipe.</p>
 </div>
+
+<?php endif; ?>
+
+</section>
 
 <script>
 
-/*
-========================================
-DELETE (NO RELOAD - SMOOTH UI)
-========================================
-*/
-function deleteRecipe(id){
+async function deleteRecipe(id){
 
     if(!confirm("Delete this recipe?")) return;
 
-    fetch("ajax/delete_recipe.php?id=" + id)
-    .then(res => res.text())
-    .then(data => {
-        if(data.trim() === "deleted"){
-            document.getElementById("recipe-" + id).remove();
+    try{
+
+        const response = await fetch(
+            `ajax/delete_recipe.php?id=${id}`
+        );
+
+        const result = await response.text();
+
+        if(result.trim() === "deleted"){
+
+            const card =
+                document.getElementById(`recipe-${id}`);
+
+            if(card){
+                card.remove();
+            }
         }
-    });
+        else{
+            alert(result);
+        }
+
+    }catch(error){
+
+        alert("Delete failed.");
+
+    }
 }
 
-/*
-========================================
-LIKE SYSTEM
-========================================
-*/
-function likeRecipe(id){
+async function likeRecipe(id){
 
-    fetch("ajax/like_recipe.php?id=" + id)
-    .then(res => res.text())
-    .then(data => {
-        alert(data);
-    });
+    try{
+
+        const response = await fetch(
+            `ajax/like_recipe.php?id=${id}`
+        );
+
+        const result = await response.text();
+
+        alert(result);
+
+    }catch(error){
+
+        alert("Unable to like recipe.");
+
+    }
 }
 
 </script>
