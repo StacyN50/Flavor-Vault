@@ -45,9 +45,8 @@ $stmt = $conn->prepare("
 ");
 
 $stmt->bind_param(
-    "iss",
+    "is",
     $user_id,
-    $searchTerm,
     $searchTerm
 );
 
